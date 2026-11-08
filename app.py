@@ -9,6 +9,15 @@ import chess.svg
 import requests
 import streamlit as st
 
+# Bridge Streamlit Secrets into environment variables BEFORE importing coach,
+# because coach.py reads its LLM settings from the environment at import time.
+for _k in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"):
+    try:
+        if _k in st.secrets:
+            os.environ[_k] = str(st.secrets[_k]).strip()
+    except Exception:
+        pass  # no secrets configured (e.g. running locally)
+
 import coach
 
 st.set_page_config(page_title="Chess Coach", page_icon="♟️", layout="centered")
@@ -75,7 +84,8 @@ top = c3.slider("Mistakes to show", 1, MAX_TOP, 3)
 
 use_llm = bool(coach.LLM_API_KEY and coach.LLM_MODEL)
 if not use_llm:
-    st.info("No LLM key configured: showing engine analysis only.")
+    missing = [k for k, v in [("LLM_API_KEY", coach.LLM_API_KEY), ("LLM_MODEL", coach.LLM_MODEL)] if not v]
+    st.info(f"LLM not configured (missing: {', '.join(missing)}). Showing engine analysis only.")
 
 if st.button("Analyze my games", type="primary") and username:
     try:
@@ -97,18 +107,24 @@ if st.button("Analyze my games", type="primary") and username:
 
     st.success(f"Analyzed {total} games and found {len(mistakes)} significant mistakes.")
     for n, m in enumerate(mistakes[:top], 1):
-        st.subheader(f"{n}. Move {m['move_no']} as {m['color']}: lost about {m['loss']} centipawns")
+        st.subheader(f"{n}. Move {m['move_no']} as {m['color']}: {coach.headline(m)}")
         left, right = st.columns([1, 1])
         left.markdown(board_svg(m), unsafe_allow_html=True)
         right.markdown(
             f"**You played:** {m['played']}  \n**Engine preferred:** {m['best']}  \n"
-            f"**Best line:** `{m['best_line']}`"
+            f"**Best line:** `{m['best_line']}`  \n**Then the opponent:** `{m['reply_line']}`"
         )
         if m["url"]:
             right.markdown(f"[Open game on Chess.com]({m['url']})")
         if use_llm:
             with st.spinner("Coach is thinking..."):
-                st.write(explain_cached(m))
+                text = explain_cached(m)
+            st.write(text)
+            warning = coach.check_explanation(m, text)
+            if warning:
+                st.caption(f"⚠️ Auto-check: {warning}. Trust the engine line above over the text.")
+            else:
+                st.caption("✓ Auto-check passed: explanation matches the engine's findings.")
         st.divider()
 
 st.caption("Built with the Chess.com public API, Stockfish, python-chess and an LLM. Engine facts are verified; the LLM only explains them.")
