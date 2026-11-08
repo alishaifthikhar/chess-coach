@@ -65,6 +65,7 @@ def find_mistakes(game: dict, username: str, engine, depth: int, min_loss: int):
         before = engine.analyse(board, limit)
         best_move = before["pv"][0]
         best_cp = cp(before, color)
+        best_mate = before["score"].pov(color).mate()
         fen = board.fen()
         move_no = board.fullmove_number
         played_san = board.san(move)
@@ -74,7 +75,10 @@ def find_mistakes(game: dict, username: str, engine, depth: int, min_loss: int):
         board.push(move)
         if board.is_game_over():
             continue
-        played_cp = cp(engine.analyse(board, limit), color)
+        after = engine.analyse(board, limit)
+        played_cp = cp(after, color)
+        after_mate = after["score"].pov(color).mate()
+        reply_line = board.variation_san(after["pv"][:4])
 
         loss = best_cp - played_cp
         already_decided = best_cp > 800 and played_cp > 800
@@ -87,6 +91,9 @@ def find_mistakes(game: dict, username: str, engine, depth: int, min_loss: int):
                     "played": played_san,
                     "best": best_san,
                     "best_line": best_line,
+                    "reply_line": reply_line,
+                    "mate_in": best_mate if best_mate and best_mate > 0 else None,
+                    "allowed_mate": -after_mate if after_mate and after_mate < 0 else None,
                     "loss": loss,
                     "eval_before": best_cp,
                     "eval_after": played_cp,
@@ -98,28 +105,76 @@ def find_mistakes(game: dict, username: str, engine, depth: int, min_loss: int):
 
 # ---------- 3. LLM explanation (grounded in engine facts) ----------
 SYSTEM = (
-    "You are a friendly chess coach. You are given a position and verified "
-    "Stockfish facts. Explain in 2-3 plain sentences why the played move was a "
-    "mistake and what idea the better move captures. Use only the facts given: "
-    "do not invent variations or evaluations. End with one short tip the player "
-    "can reuse in future games."
+    "You are a friendly chess coach talking directly to the player (say 'you'). "
+    "The Stockfish facts you receive are the only source of truth. Rules: "
+    "(1) Only mention pieces and squares that appear in the facts. "
+    "(2) 'Played' and 'Best move' are both moves by the player; the opponent's reply "
+    "line shows what happens after the played move. "
+    "(3) If a forced mate is listed, say so clearly. "
+    "(4) Never invent variations or evaluations. "
+    "Write 3-4 sentences, then one sentence starting with 'Tip:' that the player can reuse."
 )
+
+
+def headline(m: dict) -> str:
+    """Human-readable size of the mistake (mate scores make raw centipawns look silly)."""
+    if m.get("mate_in"):
+        return f"missed a forced checkmate in {m['mate_in']}"
+    if m.get("allowed_mate"):
+        return f"allowed a forced checkmate in {m['allowed_mate']}"
+    return f"lost about {m['loss'] / 100:.1f} pawns of advantage"
+
+
+def fmt_eval(centipawns: int) -> str:
+    if abs(centipawns) >= 9000:
+        return "a forced mate for the player" if centipawns > 0 else "a forced mate for the opponent"
+    return f"{centipawns / 100:+.1f} pawns"
+
+
+def describe_position(fen: str) -> str:
+    board = chess.Board(fen)
+    lines = []
+    for color, name in ((chess.WHITE, "White"), (chess.BLACK, "Black")):
+        pieces = sorted(
+            p.symbol().upper() + chess.square_name(sq)
+            for sq, p in board.piece_map().items()
+            if p.color == color
+        )
+        lines.append(f"{name}: {', '.join(pieces)}")
+    return "\n".join(lines)
+
+
+def check_explanation(m: dict, text: str) -> str | None:
+    """Cheap automatic eval. Returns a warning string, or None if checks pass."""
+    t = text.lower()
+    if m["best"].rstrip("+#").lower() not in t:
+        return "the explanation never mentions the engine's best move"
+    says_mate = "mate" in t
+    if says_mate and not (m.get("mate_in") or m.get("allowed_mate")):
+        return "it mentions checkmate but the engine found none"
+    if (m.get("mate_in") or m.get("allowed_mate")) and not says_mate:
+        return "the engine found a forced mate but the explanation does not say so"
+    return None
 
 
 def explain(m: dict) -> str:
     if not LLM_API_KEY or not LLM_MODEL:
         sys.exit("Set LLM_API_KEY and LLM_MODEL (see README), or run with --no-llm.")
 
-    board = chess.Board(m["fen"])
-    prompt = (
-        f"Player color: {m['color']}\nMove number: {m['move_no']}\n"
-        f"Position (FEN): {m['fen']}\n{board}\n\n"
-        f"Played: {m['played']}\nStockfish best: {m['best']}\n"
-        f"Best line: {m['best_line']}\n"
-        f"Eval before (cp, player POV): {m['eval_before']}\n"
-        f"Eval after played move (cp): {m['eval_after']}\n"
-        f"Centipawn loss: {m['loss']}"
-    )
+    facts = [
+        f"The player is {m['color']}. It is move {m['move_no']}.",
+        f"Pieces on the board:\n{describe_position(m['fen'])}",
+        f"Move the player played: {m['played']}",
+        f"Stockfish best move: {m['best']}  (line: {m['best_line']})",
+        f"After the played move, the opponent's best reply line: {m['reply_line']}",
+        f"Evaluation for the player before the move: {fmt_eval(m['eval_before'])}; "
+        f"after the played move: {fmt_eval(m['eval_after'])}",
+    ]
+    if m.get("mate_in"):
+        facts.append(f"The player had a forced checkmate in {m['mate_in']} with {m['best']}.")
+    if m.get("allowed_mate"):
+        facts.append(f"The played move allows the opponent a forced checkmate in {m['allowed_mate']}.")
+    prompt = "\n".join(facts)
     payload = {
         "model": LLM_MODEL,
         "max_tokens": 1500,  # reasoning models spend tokens "thinking" first
