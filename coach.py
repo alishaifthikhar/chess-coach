@@ -112,6 +112,7 @@ SYSTEM = (
     "line shows what happens after the played move. "
     "(3) If a forced mate is listed, say so clearly. "
     "(4) Never invent variations or evaluations. "
+    "(5) Always name Stockfish's best move and say what it achieves. "
     "Write 3-4 sentences, then one sentence starting with 'Tip:' that the player can reuse."
 )
 
