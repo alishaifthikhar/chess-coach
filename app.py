@@ -32,8 +32,13 @@ STOCKFISH = (
 )
 
 
+# Bump this number whenever coach.py changes what an analysis returns,
+# so old cached results are never reused.
+ANALYSIS_VERSION = 2
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def analyze(username: str, n_games: int, depth: int):
+def analyze(username: str, n_games: int, depth: int, version: int = ANALYSIS_VERSION):
     games = coach.fetch_games(username, n_games)
     mistakes = []
     with chess.engine.SimpleEngine.popen_uci(STOCKFISH) as engine:
@@ -90,7 +95,7 @@ if not use_llm:
 if st.button("Analyze my games", type="primary") and username:
     try:
         with st.spinner("Fetching games and analyzing with Stockfish (can take a minute)..."):
-            total, mistakes = analyze(username, n_games, depth)
+            total, mistakes = analyze(username, n_games, depth, ANALYSIS_VERSION)
     except requests.HTTPError as e:
         if e.response is not None and e.response.status_code == 404:
             st.error("Username not found on Chess.com.")
@@ -112,7 +117,7 @@ if st.button("Analyze my games", type="primary") and username:
         left.markdown(board_svg(m), unsafe_allow_html=True)
         right.markdown(
             f"**You played:** {m['played']}  \n**Engine preferred:** {m['best']}  \n"
-            f"**Best line:** `{m['best_line']}`  \n**Then the opponent:** `{m['reply_line']}`"
+            f"**Best line:** `{m['best_line']}`  \n**Then the opponent:** `{m.get('reply_line', '')}`"
         )
         if m["url"]:
             right.markdown(f"[Open game on Chess.com]({m['url']})")
