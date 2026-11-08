@@ -16,7 +16,7 @@ import requests
 
 API = "https://api.chess.com/pub/player"
 # Chess.com asks API users to identify themselves. Put your own contact here.
-HEADERS = {"User-Agent": "chess-coach/0.1 (contact: au630097@gmail.com)"}
+HEADERS = {"User-Agent": "chess-coach/0.1 (contact: your-email@example.com)"}
 # Any OpenAI-compatible provider works (Gemini, Groq, OpenRouter all have free tiers).
 # Set LLM_BASE_URL, LLM_API_KEY and LLM_MODEL as environment variables.
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.groq.com/openai/v1")
@@ -120,23 +120,27 @@ def explain(m: dict) -> str:
         f"Eval after played move (cp): {m['eval_after']}\n"
         f"Centipawn loss: {m['loss']}"
     )
+    payload = {
+        "model": LLM_MODEL,
+        "max_tokens": 1500,  # reasoning models spend tokens "thinking" first
+        "messages": [
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+    }
+    if "gpt-oss" in LLM_MODEL:
+        payload["reasoning_effort"] = "low"  # faster, cheaper, enough for this task
     resp = requests.post(
         f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {LLM_API_KEY}"},
-        json={
-            "model": LLM_MODEL,
-            "max_tokens": 300,
-            "messages": [
-                {"role": "system", "content": SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-        },
+        json=payload,
         timeout=60,
     )
     if resp.status_code == 429:
         return "(rate limited by the free tier; wait a minute and rerun)"
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
+    text = (resp.json()["choices"][0]["message"].get("content") or "").strip()
+    return text or "(the model returned an empty answer; try again)"
 
 
 # ---------- 4. CLI ----------
